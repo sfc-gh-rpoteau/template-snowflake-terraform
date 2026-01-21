@@ -38,7 +38,24 @@ DESC USER TF_ADMIN_USER
 
 If they match, you're all set!
 
-4. Optionally, if you wanted a new or dedicated virtual warehouse for the Terraform admin user, you can use the script `scripts/setup_warehouse.sql` to create it.
+4. Optionally, if you wanted a new or dedicated virtual warehouse for the Terraform admin user, you can use the script `scripts/setup_warehouse.sql` to create it. 
+
+### Remote State and Locking
+
+We'll be using AWS S3 and AWS DynamoDB to store the Terraform state and lock the state, but other cloud providers support remote state tracking and locking.
+
+1. Create an S3 bucket with encryption enabled and versioning enabled. Note: the state should be stored in a secure and private location.
+2. Create a DynamoDB table with a primary key of `LockID` (case-sensitive).
+3. Create an IAM policy to allow the user/role to access the S3 bucket and DynamoDB table.
+
+## Development Workflow
+
+
+## Project Structures
+
+
+
+### Remote modules
 
 
 # References
