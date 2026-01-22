@@ -48,14 +48,89 @@ We'll be using AWS S3 and AWS DynamoDB to store the Terraform state and lock the
 2. Create a DynamoDB table with a primary key of `LockID` (case-sensitive).
 3. Create an IAM policy to allow the user/role to access the S3 bucket and DynamoDB table.
 
-## Development Workflow
-
-
 ## Project Structures
 
+The recommended structure for a project. Modules are reusable components that are used in the environments subfolders to construct the consistent infrastructure accross environments.
 
+```
+environments/
+├── dev/
+|   ├── app1/
+|   |   ├── main.tf
+|   |   ├── variables.tf
+|   |   ├── outputs.tf
+|   |   ├── versions.tf
+|   |   ├── README.md
+|   |   └── backend.hcl
+|   └── app2/
+├── staging/
+|   ├── app1/
+|   └── app2/
+└── prod/
+    ├── app1/
+    └── app2/
+modules
+├── module1/
+|   ├── main.tf           # Primary resource definitions
+|   ├── variables.tf      # Input variables
+|   ├── outputs.tf        # Output values
+|   ├── versions.tf       # Version constraints
+|   ├── README.md         # Module documentation
+|   └── examples/         # Usage examples
+└── module2/
+```
 
 ### Remote modules
+
+You can also construct remote modules that are stored in Github. It's little more complex and can potentially lead to some bloat in the number of Github repositories. It might be worthwhile if your infra team wants to make infrastructure more self-service with guardrails.
+
+## Development Workflow
+
+Initialize the Terraform project in one of the subfolders of the environments directory:
+```bash
+terraform init -backend-config=backend.hcl
+```
+
+Generate an execution plan to see what changes will be applied:
+```bash
+terraform validate
+terraform plan
+```
+
+Apply the changes to the infrastructure:
+```bash
+terraform apply
+```
+
+Destroy the infrastructure:
+```bash
+terraform destroy
+```
+
+### Storing Secrets
+
+By default, Terraform will store secrets in the state file. This is not recommended and you should use a secrets manager like Snowflake Secrets or AWS Secrets Manager or Azure Key Vault.
+
+```terraform
+data "snowflake_secrets" "get_secret" {
+  like = "secret-name"
+}
+
+output "output_secret" {
+  value = data.snowflake_secrets.get_secret.secrets
+}
+```
+
+Addtional best practices:
+- Usingg the lifecycle policy to prevent destructive changes:
+
+1. `.terraform.version` to lock the version of Terraform
+2. I wouldn't use terraform to create tables in Snowflake.
+
+Dealing with infrastructure drift:
+- Importing resources
+- comparing the current state with instance state
+- updating the states to match
 
 
 # References
