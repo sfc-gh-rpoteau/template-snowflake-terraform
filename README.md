@@ -118,29 +118,49 @@ terraform destroy
 
 ### Storing Secrets
 
-By default, Terraform will store secrets in the state file. This is **NOT RECOMMENDED** and you should use a secrets manager like Snowflake Secrets or AWS Secrets Manager or Azure Key Vault.
+By default, Terraform will store secrets in the state file. This is **NOT RECOMMENDED** and you should use a secrets manager like AWS Secrets Manager or Azure Key Vault. If you're using a secrets manager, like AWS Secrets Manager, you'll need to include a provider for the secrets manager in your Terraform configuration.
 
 ```terraform
-data "snowflake_secrets" "get_secret" {
-  like = "secret-name"
-}
-
-output "output_secret" {
-  value = data.snowflake_secrets.get_secret.secrets
+provider "aws" {
+  alias = "secrets_provider"
+  # remaining provider configuration...
 }
 ```
 
-Addtional best practices:
-- Usingg the lifecycle policy to prevent destructive changes:
+Then you can use the following example to get the secret from AWS Secrets Manager:
 
-1. `.terraform.version` to lock the version of Terraform
-2. I wouldn't use terraform to create tables in Snowflake.
+```terraform
+data "aws_secretsmanager_secret" "secret" {
+  provider = aws.secrets_provider
+  name     = "secret-name"
+  # or arn="arn:aws:secretsmanager:us-east-1:123456789012:secret:secret-name"
+}
 
-Dealing with infrastructure drift:
+# How you would use the secret in your Terraform configuration
+locals {
+  secret_value = data.aws_secretsmanager_secret.secret.secret_string
+}
+
+```
+
+\*Do NOT use Snowflake Secrets to store secrets for Terraform. Though with some workarounds and policies it could be safe in theory. In practice, it's not recommended. Those secrets can end up in the state file and exposed.
+
+## Orchestration
+
+We will consider general orchestration patterns for Terraform and an implementation example with Github Actions.o create tables in Snowflake.
+
+
+### Dealing with infrastructure drift:
 - Importing resources
 - comparing the current state with instance state
 - updating the states to match
 
+
+
+Addtional best practices:
+- Usingg the lifecycle policy to prevent destructive changes:
+- `.terraform.version` to lock the version of Terraform
+- I wouldn't use terraform t
 
 # References
 
