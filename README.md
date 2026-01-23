@@ -4,7 +4,7 @@
 
 To get started we'll need to set up some resources in Snowflake and your development environment to allow Terraform to communicate with your Snowflake instance. Additionally, we'll need to set up some resources in a cloud provider so we can have remote state tracking and locking.
 
-### Snowflake Users and Roles Setup
+### Snowflake Users and Roles Setup for Local Development
 
 In this section we'll create two users and 1 role to provide to Terraform. We want to maintain a seperations of duties and the principle of least privileges. So we'll create a user for the `SECURITYADMIN` role for managing account-level roles. We'll also create a user and role for the Terraform admin user, which will be givne the minimum permissions to manage the infrastructure.
 
@@ -42,15 +42,17 @@ If they match, you're all set!
 
 ### Remote State and Locking
 
-We'll be using AWS S3 and AWS DynamoDB to store the Terraform state and lock the state, but other cloud providers support remote state tracking and locking.
+We'll be using AWS S3 to store the Terraform state and lock the state, but other cloud providers support remote state tracking and/or locking.
 
-1. Create an S3 bucket with encryption enabled and versioning enabled. Note: the state should be stored in a secure and private location.
-2. Create a DynamoDB table with a primary key of `LockID` (case-sensitive).
-3. Create an IAM policy to allow the user/role to access the S3 bucket and DynamoDB table.
+1. Create an S3 bucket with encryption enabled, versioning enabled, *and lockfile enabled*.
+2. ~~Create a DynamoDB table with a primary key of `LockID` (case-sensitive)~~
+3. Create an IAM policy to allow the user/role to access the S3 bucket ~~and DynamoDB table~~.
+
+\* AWS S3 now supports lockfile functionality, so you can use that instead of DynamoDB (deprecated for this use case).
 
 ## Project Structures
 
-The recommended structure for a project. Modules are reusable components that are used in the environments subfolders to construct the consistent infrastructure accross environments.
+The recommended structure for a project. Modules are reusable components that are used in the environments subfolders to construct the consistent infrastructure accross environments. Within `environments` will be a subfolder for each environment (dev, tst, prd). Each environment subfolder will contain subfolders for logical groups of resources centralized around a project, application, service, etc.
 
 ```
 environments/
@@ -84,6 +86,13 @@ modules
 
 You can also construct remote modules that are stored in Github. It's little more complex and can potentially lead to some bloat in the number of Github repositories. It might be worthwhile if your infra team wants to make infrastructure more self-service with guardrails.
 
+```terraform
+module "database" {
+  source = "github.com/snowflake-labs/terraform-snowflake-database?ref=v0.1.0"
+  # remaining variables and configuration...
+}
+```
+
 ## Development Workflow
 
 Initialize the Terraform project in one of the subfolders of the environments directory:
@@ -109,7 +118,7 @@ terraform destroy
 
 ### Storing Secrets
 
-By default, Terraform will store secrets in the state file. This is not recommended and you should use a secrets manager like Snowflake Secrets or AWS Secrets Manager or Azure Key Vault.
+By default, Terraform will store secrets in the state file. This is **NOT RECOMMENDED** and you should use a secrets manager like Snowflake Secrets or AWS Secrets Manager or Azure Key Vault.
 
 ```terraform
 data "snowflake_secrets" "get_secret" {

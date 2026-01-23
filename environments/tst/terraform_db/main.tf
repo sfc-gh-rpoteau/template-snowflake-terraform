@@ -11,4 +11,3 @@ resource "snowflake_schema" "terraform_schema" {
   name     = "TAGS"
   database = snowflake_database.terraform_db.name
 }
-
