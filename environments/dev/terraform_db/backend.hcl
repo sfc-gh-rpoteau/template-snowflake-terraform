@@ -1,3 +1,1 @@
-    bucket = "tf-state-s3-bucket-name"
-    key    = "project-folder-in-bucket"
-    region = "us-east-1"
+path = "../../../.terraform/dev/terraform_db/terraform.tfstate"

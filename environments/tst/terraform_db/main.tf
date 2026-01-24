@@ -1,13 +1,9 @@
-resource "snowflake_database" "terraform_db" {
-  name = "TERRAFORM_DB"
-}
+module "terraform_db" {
+  source = "../../../modules/terraform_db"
+  database_name = "TERRAFORM_DB"
 
-resource "snowflake_schema" "secrets_schema" {
-  name     = "SECRETS"
-  database = snowflake_database.terraform_db.name
-}
-
-resource "snowflake_schema" "terraform_schema" {
-  name     = "TAGS"
-  database = snowflake_database.terraform_db.name
+  tags = {
+    environment = ["DEV", "TST", "PRD"]
+    owner = ["ENGINEERING", "FINANCE", "MARKETING"]
+  }
 }
