@@ -129,7 +129,7 @@ provider "aws" {
 
 Then you can use the following example to get the secret from AWS Secrets Manager:
 
-```terraform
+```hcl
 data "aws_secretsmanager_secret" "secret" {
   provider = aws.secrets_provider
   name     = "secret-name"
@@ -147,8 +147,9 @@ locals {
 
 ## Orchestration
 
-We will consider general orchestration patterns for Terraform and an implementation example with Github Actions.o create tables in Snowflake.
+We will consider general orchestration patterns for Terraform and an implementation example with Github Actions.
 
+### Rollback Strategy
 
 ### Dealing with infrastructure drift:
 - Importing resources
@@ -161,6 +162,22 @@ Addtional best practices:
 - Usingg the lifecycle policy to prevent destructive changes:
 - `.terraform.version` to lock the version of Terraform
 - I wouldn't use terraform t
+
+## FinOps Setup
+
+### Tagging
+Tag databases, schemas, users, roles, queries, warehouses.
+
+### Consolidation
+
+### Visualization
+
+
+## Miscellaneous
+
+### Preview Features and `snowflake_execute` Resource
+
+Modules for abstracting away preview features and the `snowflake_execute` resource, so that you only need when the feature is GA, the interface is the same.
 
 # References
 
