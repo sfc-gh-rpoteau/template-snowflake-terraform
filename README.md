@@ -40,13 +40,13 @@ If they match, you're all set!
 
 4. Optionally, if you wanted a new or dedicated virtual warehouse for the Terraform admin user, you can use the script `scripts/setup_warehouse.sql` to create it. 
 
-### Remote State and Locking
+### Remote State and Locking 
 
 We'll be using AWS S3 to store the Terraform state and lock the state, but other cloud providers support remote state tracking and/or locking.
 
-1. Create an S3 bucket with encryption enabled, versioning enabled, *and lockfile enabled*.
+1. Create an S3 bucket with encryption enabled, versioning enabled, *and lockfile enabled*. A Terraform example is provided in the `scripts/aws/setup_s3_bucket.tf` file.
 2. ~~Create a DynamoDB table with a primary key of `LockID` (case-sensitive)~~
-3. Create an IAM policy to allow the user/role to access the S3 bucket ~~and DynamoDB table~~.
+3. Create an IAM policy to allow the user to access the S3 bucket ~~and DynamoDB table~~. A Terraform example is provided in the `scripts/aws/aws-terraform-state-bucket-role.json` file.
 
 \* AWS S3 now supports lockfile functionality, so you can use that instead of DynamoDB (deprecated for this use case).
 
@@ -149,12 +149,51 @@ locals {
 
 We will consider general orchestration patterns for Terraform and an implementation example with Github Actions.
 
+### General Orchestration Patterns
+
+This section assumes that your terraform code is working from your local environment.
+
+The elements of a good orchestration strategy are:
+1. Standardize the code
+2. Setup secure authentication to the remote state and locking
+3. Setup a promotion strategy
+4. Create policies and guardrails for permissible infrastructure
+6. Deal with infrastructure drift
+7. Observability and auditability
+5. Setup a rollback strategy
+
+Here's an example using Github Actions:
+
+Before we push our changes to Github, we'll want to run the following commands to ensure our changes are syntactically valid/consistent and secure. This will help us **standardize the code**.
+
+```bash
+terraform fmt
+terraform validate
+tflint
+checkov -d . --quiet
+```
+
+Next, we will set up Secure authentication between GitHub actions and AWS where we will have an S3 bucket for state tracking and locking. You haven't already first set up the S3 bucket with lockfile functionality, refer to [Remote State and Locking](#remote-state-and-locking) section for more details. Now, setup the OIDC connection between GitHub and AWS using the Github documentation [here](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws).
+
+We will create a two part workflow, with the following jobs:
+1. A pull request job to plan the changes and review the plan.
+2. A deployment job to apply the changes and promote the changes to the next environment.
+
+Check the `.github/workflow/terraform-apply-dev.yaml` file for a reference implementation.
+
+The first job triggers when a pull request is created or updated. It will make sure the code is clean, secure, follows policies and will run the plan command to generate a plan and serve it up for review.
+
+
 ### Rollback Strategy
 
 ### Dealing with infrastructure drift:
 - Importing resources
 - comparing the current state with instance state
 - updating the states to match
+
+
+
+
 
 
 
@@ -174,6 +213,15 @@ Tag databases, schemas, users, roles, queries, warehouses.
 
 
 ## Miscellaneous
+
+### Pin down the version of Terraform
+You can pin down the version of Terraform by adding the following to the `versions.tf` file:
+
+```terraform
+terraform {
+  required_version = "= 1.14.3"
+}
+```
 
 ### Preview Features and `snowflake_execute` Resource
 
