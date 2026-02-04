@@ -227,6 +227,13 @@ terraform {
 
 Modules for abstracting away preview features and the `snowflake_execute` resource, so that you only need when the feature is GA, the interface is the same.
 
+
+# Example Modules
+
+## `modules/e2e_ml_quickstart/`
+
+This module creates the infrastructure for the E2E ML Quickstart. It creates a role, database, schema, warehouse, compute pool and notebook. After setting up the infrastructure you can finish the tutorial [here](https://www.snowflake.com/en/developers/guides/end-to-end-ml-workflow).
+
 # References
 
 [[1] Snowflake Documentation: Key-pair authentication and key-pair rotation](https://docs.snowflake.com/en/user-guide/key-pair-auth)

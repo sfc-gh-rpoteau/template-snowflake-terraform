@@ -16,7 +16,7 @@ provider "snowflake" {
   user                   = var.tf_admin_user
   authenticator          = "SNOWFLAKE_JWT"
   private_key            = file(var.tf_admin_private_key)
-  private_key_passphrase = "var.tf_admin_private_key_passphrase"
+  private_key_passphrase = var.tf_admin_private_key_passphrase
   params = {
     query_tag = "managed_by=terraform"
   }
