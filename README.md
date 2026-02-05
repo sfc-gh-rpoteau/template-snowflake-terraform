@@ -6,25 +6,29 @@ To get started we'll need to set up some resources in Snowflake and your develop
 
 ### Snowflake Users and Roles Setup for Local Development
 
-In this section we'll create two users and 1 role to provide to Terraform. We want to maintain a seperations of duties and the principle of least privileges. So we'll create a user for the `SECURITYADMIN` role for managing account-level roles. We'll also create a user and role for the Terraform admin user, which will be givne the minimum permissions to manage the infrastructure.
+In this section we'll create 2 *users* and 2 *roles* to provide to Terraform. This same process can be used for other users and roles you want to use in Terraform. We want to maintain a seperations of duties and the principle of least privileges. So we'll create a user/role for the duties of the `SECURITYADMIN` role. We'll also create a user and role for the Terraform admin user, which will be given the minimum permissions to manage the infrastructure.
+
 
 1. Create two keys for connecting to Snowflake programmatically, 1) for the Terraform admin user and 2) for the Terraform security admin user. Use the following command to generate the keys:
 
 ```bash
 # generate encrypted private key
 openssl genrsa 2048 | openssl pkcs8 -topk8 -v2 des3 -inform PEM -out ~/.ssh/rsa_key.p8
+# OR
+# generate unencrypted private key (useful for auth-agnostic providers)
+openssl genrsa 2048 | openssl pkcs8 -nocrypt -topk8 -inform PEM -out ~/.ssh/rsa_key.p8
 
 # generate public key
 openssl rsa -in ~/.ssh/rsa_key.p8 -pubout -out ~/.ssh/rsa_key.pub
 ```
 
-We'll need the public keys for the next step.
+We'll need the public keys for the next step, in particular when we create the users.
 
-2. Next use the script `scripts/setup_terraform.sql` to create the Terraform admin user and role and set up key-pair authentication. You'll want to replace placeholders in the script with the public keys you generated in the previous step.
+2. Next use the script `scripts/snowflake/setup_terraform.sql` to create the Terraform users and roles and set the public keys to the users. You'll want to replace placeholders in the script with the public keys you generated in the previous step.
 
 3. Optionally, if you want to verify the key-pair authentication is working, you can run the following command:
 ```bash
-openssl rsa -pubin -in tf_rsa_key.pub -outform DER | openssl dgst -sha256 -binary | openssl enc -base64
+openssl rsa -pubin -in tf_admin_key.pub -outform DER | openssl dgst -sha256 -binary | openssl enc -base64
 ```
 and compare the output to the output of:
 
@@ -49,6 +53,26 @@ We'll be using AWS S3 to store the Terraform state and lock the state, but other
 3. Create an IAM policy to allow the user to access the S3 bucket ~~and DynamoDB table~~. A Terraform example is provided in the `scripts/aws/aws-terraform-state-bucket-role.json` file.
 
 \* AWS S3 now supports lockfile functionality, so you can use that instead of DynamoDB (deprecated for this use case).
+
+## Setup `~/.snowflake/config`
+
+Next, we wanna set up the `~/.snowflake/config` file to store some of the configurations for the Terraform admin and security admin users. Create a profile for each user/role.
+
+```ini
+[tf_admin]
+organization_name="ORG_NAME" # SELECT CURRENT_ORGANIZATION_NAME();
+account_name="ACCOUNT_NAME"  # SELECT CURRENT_ACCOUNT_NAME();
+authenticator="SNOWFLAKE_JWT"
+user="TF_ADMIN_USER"
+role="TF_ADMIN_ROLE"
+
+[tf_securityadmin]
+organization_name="ORG_NAME" # SELECT CURRENT_ORGANIZATION_NAME();
+account_name="ACCOUNT_NAME"  # SELECT CURRENT_ACCOUNT_NAME();
+authenticator="SNOWFLAKE_JWT"
+user="TF_SECURITYADMIN_USER"
+role="TF_SECURITYADMIN_ROLE"
+```
 
 ## Project Structures
 
@@ -95,7 +119,9 @@ module "database" {
 
 ## Development Workflow
 
-Initialize the Terraform project in one of the subfolders of the environments directory:
+To create a new module or deployment you can use the script `scripts/setup/new_module.py` to create the necessary files and directories. If you have a AI tool like Cursor, it does a pretty good job as well.
+
+Once your setup, travel to one of the deployment directories in the `environments/<env>` directory. Initialize the Terraform deployment by running the following command:
 ```bash
 terraform init -backend-config=backend.hcl
 ```
@@ -104,6 +130,13 @@ Generate an execution plan to see what changes will be applied:
 ```bash
 terraform validate
 terraform plan
+```
+
+Optionally, if you want to format, lint or run security scans, you can run the following commands:
+```bash
+terraform fmt
+tflint # requires installation
+checkov # requires installation
 ```
 
 Apply the changes to the infrastructure:
@@ -115,6 +148,8 @@ Destroy the infrastructure:
 ```bash
 terraform destroy
 ```
+
+> **NOTE:** In the dev environment, add variables for the `private_key` and `private_key_passphrase` for the Terraform admin and security admin users, where appropriate. For staging and production, we will use the OIDC authentication between Snowflake and Github Actions. Also, don't forget to edit you backend.hcl file to point to the correct state bucket.
 
 ### Storing Secrets
 
