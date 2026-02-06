@@ -234,7 +234,7 @@ The first job triggers when a pull request is created or updated. It will make s
 
 Addtional best practices:
 - Usingg the lifecycle policy to prevent destructive changes:
-- `.terraform.version` to lock the version of Terraform
+- `.terraform-version` to lock the version of Terraform
 - I wouldn't use terraform t
 
 ## FinOps Setup

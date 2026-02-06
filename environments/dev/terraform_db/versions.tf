@@ -11,7 +11,7 @@ terraform {
 }
 
 provider "snowflake" {
-  profile = "tf_admin"
+  profile     = "tf_admin"
   private_key = file(var.tf_admin_private_key)
   params = {
     query_tag = "managed_by=terraform"
