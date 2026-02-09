@@ -99,6 +99,42 @@ module "database" {
 
 ## Development Workflow
 
+### Pre-commit Hooks (Recommended)
+
+This project uses [pre-commit](https://pre-commit.com/) to automatically run formatting, linting, and security checks before each commit. The hooks configured are:
+
+| Hook | Tool | Required? |
+|------|------|-----------|
+| `terraform_fmt` | `terraform fmt` | Yes (Terraform must be installed) |
+| `terraform_tflint` | `tflint` | Optional — skipped if not installed |
+| `checkov` | `checkov` | Optional — skipped if not installed |
+
+**One-time setup:**
+
+```bash
+# Install pre-commit (pick one)
+brew install pre-commit   # macOS
+pip install pre-commit    # pip
+
+# Install the git hooks
+pre-commit install
+```
+
+**Optional tools:**
+
+```bash
+brew install tflint       # Terraform linter
+pip install checkov       # Security/compliance scanner
+```
+
+From this point on, every `git commit` will automatically run the configured checks. If any check fails, the commit is blocked and the failure reason is printed. You can also run the hooks manually at any time:
+
+```bash
+pre-commit run --all-files
+```
+
+### Working with Terraform
+
 To create a new module or deployment you can use the script `scripts/setup/new_module.py` to create the necessary files and directories. If you have a AI tool like Cursor, it does a pretty good job as well.
 
 Once your setup, travel to one of the deployment directories in the `environments/<env>` directory. Initialize the Terraform deployment by running the following command:
@@ -112,7 +148,7 @@ terraform validate
 terraform plan
 ```
 
-Optionally, if you want to format, lint or run security scans, you can run the following commands:
+Optionally, if you want to format, lint or run security scans manually (outside of pre-commit), you can run the following commands:
 ```bash
 terraform fmt
 tflint # requires installation
