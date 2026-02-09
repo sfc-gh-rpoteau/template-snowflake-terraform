@@ -54,26 +54,6 @@ We'll be using AWS S3 to store the Terraform state and lock the state, but other
 
 \* AWS S3 now supports lockfile functionality, so you can use that instead of DynamoDB (deprecated for this use case).
 
-## Setup `~/.snowflake/config`
-
-Next, we wanna set up the `~/.snowflake/config` file to store some of the configurations for the Terraform admin and security admin users. Create a profile for each user/role.
-
-```ini
-[tf_admin]
-organization_name="ORG_NAME" # SELECT CURRENT_ORGANIZATION_NAME();
-account_name="ACCOUNT_NAME"  # SELECT CURRENT_ACCOUNT_NAME();
-authenticator="SNOWFLAKE_JWT"
-user="TF_ADMIN_USER"
-role="TF_ADMIN_ROLE"
-
-[tf_securityadmin]
-organization_name="ORG_NAME" # SELECT CURRENT_ORGANIZATION_NAME();
-account_name="ACCOUNT_NAME"  # SELECT CURRENT_ACCOUNT_NAME();
-authenticator="SNOWFLAKE_JWT"
-user="TF_SECURITYADMIN_USER"
-role="TF_SECURITYADMIN_ROLE"
-```
-
 ## Project Structures
 
 The recommended structure for a project. Modules are reusable components that are used in the environments subfolders to construct the consistent infrastructure accross environments. Within `environments` will be a subfolder for each environment (dev, tst, prd). Each environment subfolder will contain subfolders for logical groups of resources centralized around a project, application, service, etc.

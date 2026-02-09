@@ -64,7 +64,6 @@ jobs:
           else
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
           fi
-
   # ============================================================
   # LINT: Format check, TFLint, and Checkov security scan
   # ============================================================
@@ -158,4 +157,143 @@ jobs:
         if: steps.fmt.outcome == 'failure'
         run: |
           echo "::error::Terraform format check failed. Run 'terraform fmt -recursive' to fix."
+          exit 1
+  # ============================================================
+  # PLAN: Terraform init, validate, and plan
+  # ============================================================
+  plan:
+    name: Plan (${{ matrix.deployment_dir }})
+    needs: [detect , lint]
+    if: needs.detect.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        deployment_dir: ${{ fromJson(needs.detect.outputs.deployment_dirs) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get Terraform version
+        run: echo "TF_VERSION=$(cat .terraform-version)" >> $GITHUB_ENV
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      # Uncomment when using AWS S3 backend
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Extract deployment name
+        id: deployment
+        run: |
+          DEPLOYMENT_NAME=$(basename "${{ matrix.deployment_dir }}")
+          echo "name=$DEPLOYMENT_NAME" >> "$GITHUB_OUTPUT"
+          # Create safe artifact name by replacing slashes
+          SAFE_NAME=$(echo "${{ matrix.deployment_dir }}" | tr '/' '-')
+          echo "safe_name=$SAFE_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Snowflake OIDC Auth
+        if: vars.SNOWFLAKE_AUTHENTICATOR == 'WORKLOAD_IDENTITY'
+        uses: snowflakedb/snowflake-cli-action@v2.0
+        with:
+          use-oidc: true
+          cli-version: "3.11"
+
+      - name: Setup Snowflake Key Pair Auth
+        if: vars.SNOWFLAKE_AUTHENTICATOR != 'WORKLOAD_IDENTITY'
+        env:
+          SF_PRIVATE_KEY: ${{ secrets.TF_ADMIN_PRIVATE_KEY }}
+        run: |
+          echo "SNOWFLAKE_AUTHENTICATOR=${{ vars.SNOWFLAKE_AUTHENTICATOR }}" >> "$GITHUB_ENV"
+          {
+            echo "SNOWFLAKE_PRIVATE_KEY<<SNOWFLAKE_PRIVATE_KEY_EOF"
+            echo "$SF_PRIVATE_KEY"
+            echo "SNOWFLAKE_PRIVATE_KEY_EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Terraform Init
+        id: init
+        working-directory: ${{ matrix.deployment_dir }}
+        run: |
+          terraform init -upgrade \
+            -backend-config=backend.hcl \
+            -input=false
+        env:
+          TF_VAR_tf_admin_private_key: ${{ vars.TF_ADMIN_PRIVATE_KEY }}
+
+      - name: Terraform Validate
+        id: validate
+        working-directory: ${{ matrix.deployment_dir }}
+        run: terraform validate -no-color
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ matrix.deployment_dir }}
+        run: |
+          terraform plan \
+            -no-color \
+            -input=false \
+            -lock-timeout=5m \
+            -out=tfplan \
+            2>&1 | tee plan-output.txt
+
+          # Generate human-readable plan
+          terraform show -no-color tfplan > plan.txt
+        env:
+          TF_VAR_organization_name: ${{ vars.SNOWFLAKE_ORGANIZATION_NAME }}
+          TF_VAR_account_name: ${{ vars.SNOWFLAKE_ACCOUNT_NAME }}
+          TF_VAR_tf_admin_user: ${{ vars.SNOWFLAKE_USER }}
+          TF_VAR_tf_admin_role: ${{ vars.SNOWFLAKE_ROLE }}
+        continue-on-error: true
+
+      - name: Upload Plan Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ steps.deployment.outputs.safe_name }}
+          path: |
+            ${{ matrix.deployment_dir }}/tfplan
+            ${{ matrix.deployment_dir }}/plan.txt
+            ${{ matrix.deployment_dir }}/plan-output.txt
+          retention-days: 0
+
+      - name: Plan Summary
+        if: always()
+        run: |
+          echo "## Terraform Plan for \`${{ matrix.deployment_dir }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [[ "${{ steps.init.outcome }}" != "success" ]]; then
+            echo "❌ **Init**: Failed" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ steps.validate.outcome }}" != "success" ]]; then
+            echo "❌ **Validate**: Failed" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ steps.plan.outcome }}" != "success" ]]; then
+            echo "❌ **Plan**: Failed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ **Plan**: Success" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "<details><summary>Show Plan Output</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```terraform' >> $GITHUB_STEP_SUMMARY
+          if [[ -f "${{ matrix.deployment_dir }}/plan.txt" ]]; then
+            head -c 65000 "${{ matrix.deployment_dir }}/plan.txt" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Plan output not available" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+
+      - name: Check Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: |
+          echo "::error::Terraform plan failed for ${{ matrix.deployment_dir }}"
           exit 1
