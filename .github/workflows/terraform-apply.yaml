@@ -188,7 +188,7 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Extract deployment name
@@ -226,8 +226,6 @@ jobs:
           terraform init -upgrade \
             -backend-config=backend.hcl \
             -input=false
-        env:
-          TF_VAR_tf_admin_private_key: ${{ vars.TF_ADMIN_PRIVATE_KEY }}
 
       - name: Terraform Validate
         id: validate
@@ -248,10 +246,10 @@ jobs:
           # Generate human-readable plan
           terraform show -no-color tfplan > plan.txt
         env:
-          TF_VAR_organization_name: ${{ vars.SNOWFLAKE_ORGANIZATION_NAME }}
-          TF_VAR_account_name: ${{ vars.SNOWFLAKE_ACCOUNT_NAME }}
-          TF_VAR_tf_admin_user: ${{ vars.SNOWFLAKE_USER }}
-          TF_VAR_tf_admin_role: ${{ vars.SNOWFLAKE_ROLE }}
+          TF_VAR_organization_name: ${{ secrets.SNOWFLAKE_ORGANIZATION_NAME }}
+          TF_VAR_account_name: ${{ secrets.SNOWFLAKE_ACCOUNT_NAME }}
+          TF_VAR_tf_admin_user: ${{ secrets.SNOWFLAKE_USER }}
+          TF_VAR_tf_admin_role: ${{ secrets.SNOWFLAKE_ROLE }}
         continue-on-error: true
 
       - name: Upload Plan Artifact
