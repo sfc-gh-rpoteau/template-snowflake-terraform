@@ -6,25 +6,29 @@ To get started we'll need to set up some resources in Snowflake and your develop
 
 ### Snowflake Users and Roles Setup for Local Development
 
-In this section we'll create two users and 1 role to provide to Terraform. We want to maintain a seperations of duties and the principle of least privileges. So we'll create a user for the `SECURITYADMIN` role for managing account-level roles. We'll also create a user and role for the Terraform admin user, which will be givne the minimum permissions to manage the infrastructure.
+In this section we'll create 2 *users* and 2 *roles* to provide to Terraform. This same process can be used for other users and roles you want to use in Terraform. We want to maintain a seperations of duties and the principle of least privileges. So we'll create a user/role for the duties of the `SECURITYADMIN` role. We'll also create a user and role for the Terraform admin user, which will be given the minimum permissions to manage the infrastructure.
+
 
 1. Create two keys for connecting to Snowflake programmatically, 1) for the Terraform admin user and 2) for the Terraform security admin user. Use the following command to generate the keys:
 
 ```bash
 # generate encrypted private key
 openssl genrsa 2048 | openssl pkcs8 -topk8 -v2 des3 -inform PEM -out ~/.ssh/rsa_key.p8
+# OR
+# generate unencrypted private key (useful for auth-agnostic providers)
+openssl genrsa 2048 | openssl pkcs8 -nocrypt -topk8 -inform PEM -out ~/.ssh/rsa_key.p8
 
 # generate public key
 openssl rsa -in ~/.ssh/rsa_key.p8 -pubout -out ~/.ssh/rsa_key.pub
 ```
 
-We'll need the public keys for the next step.
+We'll need the public keys for the next step, in particular when we create the users.
 
-2. Next use the script `scripts/setup_terraform.sql` to create the Terraform admin user and role and set up key-pair authentication. You'll want to replace placeholders in the script with the public keys you generated in the previous step.
+2. Next use the script `scripts/snowflake/setup_terraform.sql` to create the Terraform users and roles and set the public keys to the users. You'll want to replace placeholders in the script with the public keys you generated in the previous step.
 
 3. Optionally, if you want to verify the key-pair authentication is working, you can run the following command:
 ```bash
-openssl rsa -pubin -in tf_rsa_key.pub -outform DER | openssl dgst -sha256 -binary | openssl enc -base64
+openssl rsa -pubin -in tf_admin_key.pub -outform DER | openssl dgst -sha256 -binary | openssl enc -base64
 ```
 and compare the output to the output of:
 
@@ -95,7 +99,45 @@ module "database" {
 
 ## Development Workflow
 
-Initialize the Terraform project in one of the subfolders of the environments directory:
+### Pre-commit Hooks (Recommended)
+
+This project uses [pre-commit](https://pre-commit.com/) to automatically run formatting, linting, and security checks before each commit. The hooks configured are:
+
+| Hook | Tool | Required? |
+|------|------|-----------|
+| `terraform_fmt` | `terraform fmt` | Yes (Terraform must be installed) |
+| `terraform_tflint` | `tflint` | Optional — skipped if not installed |
+| `checkov` | `checkov` | Optional — skipped if not installed |
+
+**One-time setup:**
+
+```bash
+# Install pre-commit (pick one)
+brew install pre-commit   # macOS
+pip install pre-commit    # pip
+
+# Install the git hooks
+pre-commit install
+```
+
+**Optional tools:**
+
+```bash
+brew install tflint       # Terraform linter
+pip install checkov       # Security/compliance scanner
+```
+
+From this point on, every `git commit` will automatically run the configured checks. If any check fails, the commit is blocked and the failure reason is printed. You can also run the hooks manually at any time:
+
+```bash
+pre-commit run --all-files
+```
+
+### Working with Terraform
+
+To create a new module or deployment you can use the script `scripts/setup/new_module.py` to create the necessary files and directories. If you have a AI tool like Cursor, it does a pretty good job as well.
+
+Once your setup, travel to one of the deployment directories in the `environments/<env>` directory. Initialize the Terraform deployment by running the following command:
 ```bash
 terraform init -backend-config=backend.hcl
 ```
@@ -104,6 +146,13 @@ Generate an execution plan to see what changes will be applied:
 ```bash
 terraform validate
 terraform plan
+```
+
+Optionally, if you want to format, lint or run security scans manually (outside of pre-commit), you can run the following commands:
+```bash
+terraform fmt
+tflint # requires installation
+checkov # requires installation
 ```
 
 Apply the changes to the infrastructure:
@@ -115,6 +164,8 @@ Destroy the infrastructure:
 ```bash
 terraform destroy
 ```
+
+> **NOTE:** In the dev environment, add variables for the `private_key` and `private_key_passphrase` for the Terraform admin and security admin users, where appropriate. For staging and production, we will use the OIDC authentication between Snowflake and Github Actions. Also, don't forget to edit you backend.hcl file to point to the correct state bucket.
 
 ### Storing Secrets
 
@@ -199,7 +250,7 @@ The first job triggers when a pull request is created or updated. It will make s
 
 Addtional best practices:
 - Usingg the lifecycle policy to prevent destructive changes:
-- `.terraform.version` to lock the version of Terraform
+- `.terraform-version` to lock the version of Terraform
 - I wouldn't use terraform t
 
 ## FinOps Setup

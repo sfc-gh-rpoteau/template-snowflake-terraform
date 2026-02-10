@@ -47,3 +47,55 @@ python3 new_module.py -p -o modules/new_feature
 - `outputs.tf` - Output values (only with `-o` flag)
 
 The script auto-detects your installed Terraform version for `versions.tf`. If Terraform is not installed, it defaults to `1.14.4`.
+
+---
+
+## new_deployment.py
+
+Creates a new Terraform deployment under `environments/<env>/<name>/` with template files.
+
+### Usage
+
+```bash
+python3 new_deployment.py [OPTIONS] -e <env> <name>
+```
+
+### Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `name` | Deployment name (e.g., `governance_db`) |
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `-e, --env` | **(required)** Environment name (e.g., `dev`, `tst`, `prd`) |
+| `-p, --parents` | Create parent directories if they don't exist |
+| `-o, --with-outputs` | Include an `output.tf` file |
+
+### Examples
+
+```bash
+# Create deployment in dev environment
+python3 new_deployment.py -e dev my_deployment
+
+# Create deployment with parent directories
+python3 new_deployment.py -e prd -p my_deployment
+
+# Create deployment with output.tf
+python3 new_deployment.py -e dev -o my_deployment
+
+# Full example
+python3 new_deployment.py -e tst -p -o my_deployment
+```
+
+### Generated Files
+
+- `versions.tf` - Terraform, provider, and backend configuration with Snowflake provider block
+- `variables.tf` - Snowflake connection variables (`account_name`, `organization_name`, `tf_admin_role`, `tf_admin_user`)
+- `backend.hcl` - Local backend path with commented-out S3 backend placeholders
+- `main.tf` - Empty template with a note to add a module
+- `output.tf` - Output values (only with `-o` flag)
+
+The script auto-detects your installed Terraform version for `versions.tf`. If Terraform is not installed, it defaults to `1.14.4`.
