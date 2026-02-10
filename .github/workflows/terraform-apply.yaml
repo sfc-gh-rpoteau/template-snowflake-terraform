@@ -297,3 +297,108 @@ jobs:
         run: |
           echo "::error::Terraform plan failed for ${{ matrix.deployment_dir }}"
           exit 1
+# ============================================================
+  # COMMENT: Post plan summary to PR
+  # ============================================================
+  comment:
+    name: PR Comment
+    needs: [detect, plan]
+    if: always() && needs.detect.outputs.has_changes == 'true' && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all plan artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tfplan-*
+          path: plans
+          merge-multiple: false
+
+      - name: Generate PR Comment
+        id: comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const deploymentDirs = ${{ needs.detect.outputs.deployment_dirs }};
+            let comment = '## 🏗️ Terraform Plan Summary\n\n';
+
+            // Get plan status from job
+            const planResult = '${{ needs.plan.result }}';
+            if (planResult === 'success') {
+              comment += '✅ All plans completed successfully\n\n';
+            } else if (planResult === 'failure') {
+              comment += '❌ Some plans failed\n\n';
+            } else {
+              comment += '⚠️ Plans completed with warnings\n\n';
+            }
+
+            comment += '| Stack | Status |\n';
+            comment += '|-------|--------|\n';
+
+            for (const dir of deploymentDirs) {
+              const safeName = dir.replace(/\//g, '-');
+              const planPath = `plans/tfplan-${safeName}/plan.txt`;
+
+              let status = '✅';
+              if (!fs.existsSync(planPath)) {
+                status = '❌';
+              }
+
+              comment += `| \`${dir}\` | ${status} |\n`;
+            }
+
+            comment += '\n<details><summary>📋 Plan Details</summary>\n\n';
+
+            for (const dir of deploymentDirs) {
+              const safeName = dir.replace(/\//g, '-');
+              const planPath = `plans/tfplan-${safeName}/plan.txt`;
+
+              comment += `### \`${dir}\`\n\n`;
+
+              if (fs.existsSync(planPath)) {
+                let planContent = fs.readFileSync(planPath, 'utf8');
+                // Truncate if too long
+                if (planContent.length > 10000) {
+                  planContent = planContent.substring(0, 10000) + '\n... (truncated)';
+                }
+                comment += '```terraform\n' + planContent + '\n```\n\n';
+              } else {
+                comment += '```\nPlan output not available\n```\n\n';
+              }
+            }
+
+            comment += '</details>\n\n';
+            comment += `> 📦 Full plan artifacts are available in the [Actions run](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})`;
+
+            // Truncate entire comment if needed (GitHub has 65536 char limit)
+            if (comment.length > 65000) {
+              comment = comment.substring(0, 64900) + '\n\n... (comment truncated)';
+            }
+
+            // Find existing comment to update
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' &&
+              c.body.includes('🏗️ Terraform Plan Summary')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                ...context.repo,
+                comment_id: botComment.id,
+                body: comment
+              });
+            } else {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: context.issue.number,
+                body: comment
+              });
+            }

@@ -1,11 +1,11 @@
-variable "account_name" {
-  description = "Snowflake account"
+variable "organization_name" {
+  description = "Snowflake organization"
   type        = string
   sensitive   = true # Marks the variable as sensitive
 }
 
-variable "organization_name" {
-  description = "Snowflake organization"
+variable "account_name" {
+  description = "Snowflake account"
   type        = string
   sensitive   = true # Marks the variable as sensitive
 }
