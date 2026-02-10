@@ -1,5 +1,8 @@
 # Terraform gitignore from https://github.com/github/gitignore/blob/main/Terraform.gitignore
 
+# act cli artifacts
+artifacts/
+
 # Environment variables
 .env
 .env.*

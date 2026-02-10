@@ -4,6 +4,6 @@ module "terraform_db" {
 
   tags = {
     environment = ["DEV", "TST", "PRD"]
-    owner       = ["ENGINEERING", "FINANCE", "MARKETING"]
+    cost_center = ["ENGINEERING", "FINANCE", "MARKETING"]
   }
 }
