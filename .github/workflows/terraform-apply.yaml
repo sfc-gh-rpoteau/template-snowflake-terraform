@@ -166,6 +166,7 @@ jobs:
     needs: [detect , lint]
     if: needs.detect.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
+    environment: development
     strategy:
       fail-fast: false
       matrix:
