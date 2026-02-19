@@ -13,7 +13,7 @@ terraform {
 provider "snowflake" {
   organization_name = var.organization_name
   account_name      = var.account_name
-  user              = var.tf_admin_user
+  user              = var.tf_user
   role              = var.tf_admin_role
 
   params = {
@@ -21,3 +21,14 @@ provider "snowflake" {
   }
 }
 
+provider "snowflake" {
+  alias             = "securityadmin"
+  organization_name = var.organization_name
+  account_name      = var.account_name
+  user              = var.tf_user
+  role              = var.tf_securityadmin_role
+
+  params = {
+    query_tag = "managed_by=terraform"
+  }
+}
