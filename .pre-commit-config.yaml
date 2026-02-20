@@ -2,12 +2,16 @@ repos:
   - repo: https://github.com/antonbabenko/pre-commit-terraform
     rev: v1.105.0
     hooks:
-      # Rewrites all Terraform files to a canonical format
-      - id: terraform_fmt
+      # Runs terraform validate
+      - id: terraform_validate
         files: ^(environments|modules)/
 
       # Runs tflint — skipped automatically if tflint is not installed
       - id: terraform_tflint
+        files: ^(environments|modules)/
+      
+      # Rewrites all Terraform files to a canonical format
+      - id: terraform_fmt
         files: ^(environments|modules)/
 
   - repo: https://github.com/bridgecrewio/checkov.git

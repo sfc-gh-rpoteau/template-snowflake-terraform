@@ -6,4 +6,8 @@ module "terraform_db" {
     environment = ["DEV", "TST", "PRD"]
     cost_center = ["ENGINEERING", "FINANCE", "MARKETING"]
   }
+
+  providers = {
+    snowflake.securityadmin = snowflake.securityadmin
+  }
 }

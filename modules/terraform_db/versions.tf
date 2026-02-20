@@ -5,6 +5,7 @@ terraform {
     snowflake = {
       source  = "snowflakedb/snowflake"
       version = "~> 2.12"
+      configuration_aliases = [snowflake.securityadmin]
     }
   }
 }

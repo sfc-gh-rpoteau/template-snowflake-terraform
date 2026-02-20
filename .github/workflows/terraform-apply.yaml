@@ -6,17 +6,22 @@ on:
     paths:
       - "environments/dev/**"
       - "modules/**"
+  push:
+    branches: [dev]
+    paths:
+      - "environments/dev/**"
+      - "modules/**"
 
 permissions:
   contents: read
   pull-requests: write
   id-token: write   # required for OIDC
   actions: read 
-  # issues: write
+  issues: write
 
 concurrency:
   group: terraform-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # ============================================================
@@ -24,11 +29,11 @@ jobs:
   # ============================================================
   detect:
     name: Detect Changes
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     outputs:
       deployment_dirs: ${{ steps.set-matrix.outputs.deployment_dirs }}
       has_changes: ${{ steps.set-matrix.outputs.has_changes }}
+      plan_run_id: ${{ steps.find-run.outputs.run_id }}
 
     steps:
       - name: Checkout
@@ -64,13 +69,49 @@ jobs:
           else
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Find PR plan run
+        if: github.event_name == 'push'
+        id: find-run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              ...context.repo,
+              commit_sha: context.sha,
+            });
+
+            const mergedPr = prs.find(pr => pr.merged_at && pr.base.ref === 'dev');
+            if (!mergedPr) {
+              core.setFailed(`No merged PR found for commit ${context.sha}`);
+              return;
+            }
+            core.info(`Found merged PR #${mergedPr.number} (head SHA: ${mergedPr.head.sha})`);
+
+            const { data: runs } = await github.rest.actions.listWorkflowRuns({
+              ...context.repo,
+              workflow_id: 'terraform-apply.yaml',
+              event: 'pull_request',
+              head_sha: mergedPr.head.sha,
+              status: 'success',
+            });
+
+            if (!runs.workflow_runs.length) {
+              core.setFailed(`No successful plan run found for PR #${mergedPr.number}`);
+              return;
+            }
+
+            const runId = runs.workflow_runs[0].id;
+            core.info(`Using workflow run ${runId}`);
+            core.setOutput('run_id', runId);
+
   # ============================================================
   # LINT: Format check, TFLint, and Checkov security scan
   # ============================================================
   lint:
     name: Lint (${{ matrix.deployment_dir }})
     needs: detect
-    if: needs.detect.outputs.has_changes == 'true'
+    if: github.event_name == 'pull_request' && needs.detect.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -163,8 +204,8 @@ jobs:
   # ============================================================
   plan:
     name: Plan (${{ matrix.deployment_dir }})
-    needs: [detect , lint]
-    if: needs.detect.outputs.has_changes == 'true'
+    needs: [detect, lint]
+    if: github.event_name == 'pull_request' && needs.detect.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     environment: development
     strategy:
@@ -185,11 +226,21 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
-      # Uncomment when using AWS S3 backend
+      # AWS credentials: uses OIDC if vars.AWS_ROLE_TO_ASSUME is set,
+      # otherwise falls back to static Access Key credentials.
       - name: Configure AWS credentials (OIDC)
+        if: vars.AWS_ROLE_TO_ASSUME != ''
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Configure AWS credentials (Access Key)
+        if: vars.AWS_ROLE_TO_ASSUME == ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Extract deployment name
@@ -203,10 +254,19 @@ jobs:
 
       - name: Setup Snowflake OIDC Auth
         if: vars.SNOWFLAKE_AUTHENTICATOR == 'WORKLOAD_IDENTITY'
-        uses: snowflakedb/snowflake-cli-action@v2.0
-        with:
-          use-oidc: true
-          cli-version: "3.11"
+        run: |
+          TOKEN=$(curl -sLS \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=snowflakecomputing.com" \
+            | jq -r '.value')
+          echo "::add-mask::$TOKEN"
+          echo "SNOWFLAKE_AUTHENTICATOR=WORKLOAD_IDENTITY" >> "$GITHUB_ENV"
+          echo "SNOWFLAKE_WORKLOAD_IDENTITY_PROVIDER=OIDC" >> "$GITHUB_ENV"
+          {
+            echo "SNOWFLAKE_TOKEN<<SNOWFLAKE_TOKEN_EOF"
+            echo "$TOKEN"
+            echo "SNOWFLAKE_TOKEN_EOF"
+          } >> "$GITHUB_ENV"
 
       - name: Setup Snowflake Key Pair Auth
         if: vars.SNOWFLAKE_AUTHENTICATOR != 'WORKLOAD_IDENTITY'
@@ -249,8 +309,9 @@ jobs:
         env:
           TF_VAR_organization_name: ${{ secrets.SNOWFLAKE_ORGANIZATION_NAME }}
           TF_VAR_account_name: ${{ secrets.SNOWFLAKE_ACCOUNT_NAME }}
-          TF_VAR_tf_admin_user: ${{ secrets.SNOWFLAKE_USER }}
-          TF_VAR_tf_admin_role: ${{ secrets.SNOWFLAKE_ROLE }}
+          TF_VAR_tf_user: ${{ secrets.SNOWFLAKE_USER }}
+          TF_VAR_tf_admin_role: ${{ secrets.SNOWFLAKE_ADMIN_ROLE }}
+          TF_VAR_tf_securityadmin_role: ${{ secrets.SNOWFLAKE_SECURITYADMIN_ROLE }}
         continue-on-error: true
 
       - name: Upload Plan Artifact
@@ -401,3 +462,132 @@ jobs:
                 body: comment
               });
             }
+
+  # ============================================================
+  # APPLY: Apply the plan from the PR workflow run
+  # ============================================================
+  apply:
+    name: Apply (${{ matrix.deployment_dir }})
+    needs: [detect]
+    if: github.event_name == 'push' && needs.detect.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    environment: development
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        deployment_dir: ${{ fromJson(needs.detect.outputs.deployment_dirs) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get Terraform version
+        run: echo "TF_VERSION=$(cat .terraform-version)" >> $GITHUB_ENV
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Extract deployment name
+        id: deployment
+        run: |
+          SAFE_NAME=$(echo "${{ matrix.deployment_dir }}" | tr '/' '-')
+          echo "safe_name=$SAFE_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Setup Snowflake OIDC Auth
+        if: vars.SNOWFLAKE_AUTHENTICATOR == 'WORKLOAD_IDENTITY'
+        run: |
+          TOKEN=$(curl -sLS \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=snowflakecomputing.com" \
+            | jq -r '.value')
+          echo "::add-mask::$TOKEN"
+          echo "SNOWFLAKE_AUTHENTICATOR=WORKLOAD_IDENTITY" >> "$GITHUB_ENV"
+          echo "SNOWFLAKE_WORKLOAD_IDENTITY_PROVIDER=OIDC" >> "$GITHUB_ENV"
+          {
+            echo "SNOWFLAKE_TOKEN<<SNOWFLAKE_TOKEN_EOF"
+            echo "$TOKEN"
+            echo "SNOWFLAKE_TOKEN_EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Setup Snowflake Key Pair Auth
+        if: vars.SNOWFLAKE_AUTHENTICATOR != 'WORKLOAD_IDENTITY'
+        env:
+          SF_PRIVATE_KEY: ${{ secrets.TF_ADMIN_PRIVATE_KEY }}
+        run: |
+          echo "SNOWFLAKE_AUTHENTICATOR=${{ vars.SNOWFLAKE_AUTHENTICATOR }}" >> "$GITHUB_ENV"
+          {
+            echo "SNOWFLAKE_PRIVATE_KEY<<SNOWFLAKE_PRIVATE_KEY_EOF"
+            echo "$SF_PRIVATE_KEY"
+            echo "SNOWFLAKE_PRIVATE_KEY_EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Terraform Init
+        id: init
+        working-directory: ${{ matrix.deployment_dir }}
+        run: |
+          terraform init -upgrade \
+            -backend-config=backend.hcl \
+            -input=false
+
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ steps.deployment.outputs.safe_name }}
+          path: ${{ matrix.deployment_dir }}
+          run-id: ${{ needs.detect.outputs.plan_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Terraform Apply
+        id: apply
+        working-directory: ${{ matrix.deployment_dir }}
+        run: |
+          terraform apply \
+            -input=false \
+            -no-color \
+            -lock-timeout=5m \
+            tfplan \
+            2>&1 | tee apply-output.txt
+        env:
+          TF_VAR_organization_name: ${{ secrets.SNOWFLAKE_ORGANIZATION_NAME }}
+          TF_VAR_account_name: ${{ secrets.SNOWFLAKE_ACCOUNT_NAME }}
+          TF_VAR_tf_user: ${{ secrets.SNOWFLAKE_USER }}
+          TF_VAR_tf_admin_role: ${{ secrets.SNOWFLAKE_ADMIN_ROLE }}
+          TF_VAR_tf_securityadmin_role: ${{ secrets.SNOWFLAKE_SECURITYADMIN_ROLE }}
+
+      - name: Apply Summary
+        if: always()
+        run: |
+          echo "## Terraform Apply for \`${{ matrix.deployment_dir }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ steps.apply.outcome }}" == "success" ]]; then
+            echo "✅ **Apply**: Success" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Apply**: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "<details><summary>Show Apply Output</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          if [[ -f "apply-output.txt" ]]; then
+            head -c 65000 apply-output.txt >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Apply output not available" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+
+      - name: Check Apply Status
+        if: steps.apply.outcome == 'failure'
+        run: |
+          echo "::error::Terraform apply failed for ${{ matrix.deployment_dir }}"
+          exit 1

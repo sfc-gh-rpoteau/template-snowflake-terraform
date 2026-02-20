@@ -22,3 +22,10 @@ resource "snowflake_tag" "tags" {
   schema         = snowflake_schema.terraform_schema.name
   allowed_values = length(each.value) > 0 ? each.value : null
 }
+
+resource "snowflake_account_role" "terraform_db_admin" {
+  provider = snowflake.securityadmin
+
+  name    = upper("${var.database_name}_ADMIN")
+  comment = "Role for managing the ${var.database_name} database"
+}
