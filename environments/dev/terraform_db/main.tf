@@ -10,7 +10,7 @@ module "terraform_db" {
 
 resource "snowflake_role" "terraform_db_admin" {
   provider = snowflake.securityadmin
-  
-  name = "TERRAFORM_DB_ADMIN"
+
+  name    = "TERRAFORM_DB_ADMIN"
   comment = "Role for managing the Terraform database"
 }
