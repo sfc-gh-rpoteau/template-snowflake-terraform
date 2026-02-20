@@ -226,11 +226,21 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
-      # Uncomment when using AWS S3 backend
+      # AWS credentials: uses OIDC if vars.AWS_ROLE_TO_ASSUME is set,
+      # otherwise falls back to static Access Key credentials.
       - name: Configure AWS credentials (OIDC)
+        if: vars.AWS_ROLE_TO_ASSUME != ''
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Configure AWS credentials (Access Key)
+        if: vars.AWS_ROLE_TO_ASSUME == ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Extract deployment name
