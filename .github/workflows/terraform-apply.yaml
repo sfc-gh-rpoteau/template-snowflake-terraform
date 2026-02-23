@@ -246,14 +246,14 @@ jobs:
       # AWS credentials: uses OIDC if vars.AWS_ROLE_TO_ASSUME is set,
       # otherwise falls back to static Access Key credentials.
       - name: Configure AWS credentials (OIDC)
-        if: vars.AWS_ROLE_TO_ASSUME != ''
+        if: vars.SNOWFLAKE_AUTHENTICATOR == 'WORKLOAD_IDENTITY'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Configure AWS credentials (Access Key)
-        if: vars.AWS_ROLE_TO_ASSUME == ''
+        if: vars.SNOWFLAKE_AUTHENTICATOR != 'WORKLOAD_IDENTITY'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
