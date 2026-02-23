@@ -1,1 +1,0 @@
- path = "../../../.terraform/tst/terraform_db/terraform.tfstate"
