@@ -2,6 +2,10 @@
 
 # act cli artifacts
 artifacts/
+events/
+scripts/generate-act-events.sh
+Dockerfile.act
+.actrc
 
 # Environment variables
 .env
@@ -53,3 +57,4 @@ terraform.rc
 # planout
 
 .DS_Store
+TODO.md

@@ -2,14 +2,14 @@ name: terraform-plan-apply
 
 on:
   pull_request:
-    branches: [dev]
+    branches: [dev, staging, main]
     paths:
-      - "environments/dev/**"
+      - "environments/**"
       - "modules/**"
   push:
-    branches: [dev]
+    branches: [dev, staging, main]
     paths:
-      - "environments/dev/**"
+      - "environments/**"
       - "modules/**"
 
 permissions:
@@ -34,10 +34,26 @@ jobs:
       deployment_dirs: ${{ steps.set-matrix.outputs.deployment_dirs }}
       has_changes: ${{ steps.set-matrix.outputs.has_changes }}
       plan_run_id: ${{ steps.find-run.outputs.run_id }}
+      env_dir: ${{ steps.env.outputs.env_dir }}
+      gh_environment: ${{ steps.env.outputs.gh_environment }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve environment from branch
+        id: env
+        run: |
+          BRANCH="${{ github.base_ref || github.ref_name }}"
+          case "$BRANCH" in
+            dev)     ENV_DIR="environments/development"; GH_ENV="development" ;;
+            staging) ENV_DIR="environments/staging";     GH_ENV="staging" ;;
+            main)    ENV_DIR="environments/production";  GH_ENV="production" ;;
+            *)       echo "::error::Unknown branch $BRANCH"; exit 1 ;;
+          esac
+          echo "env_dir=$ENV_DIR" >> "$GITHUB_OUTPUT"
+          echo "gh_environment=$GH_ENV" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
       - name: Get Terraform version
         id: tf_version
@@ -58,7 +74,7 @@ jobs:
 
           # Run the deployment detection script
           # This handles both direct changes and module dependency changes
-          deployment_dirs=$(.github/scripts/changed-deployments.sh "$CHANGED")
+          deployment_dirs=$(.github/scripts/changed-deployments.sh "$CHANGED" "${{ steps.env.outputs.env_dir }}")
 
           echo "Deployment dirs JSON: $deployment_dirs"
           echo "deployment_dirs=$deployment_dirs" >> "$GITHUB_OUTPUT"
@@ -81,7 +97,8 @@ jobs:
               commit_sha: context.sha,
             });
 
-            const mergedPr = prs.find(pr => pr.merged_at && pr.base.ref === 'dev');
+            const targetBranch = '${{ steps.env.outputs.branch }}';
+            const mergedPr = prs.find(pr => pr.merged_at && pr.base.ref === targetBranch);
             if (!mergedPr) {
               core.setFailed(`No merged PR found for commit ${context.sha}`);
               return;
@@ -207,7 +224,7 @@ jobs:
     needs: [detect, lint]
     if: github.event_name == 'pull_request' && needs.detect.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
-    environment: development
+    environment: ${{ needs.detect.outputs.gh_environment }}
     strategy:
       fail-fast: false
       matrix:
@@ -229,14 +246,14 @@ jobs:
       # AWS credentials: uses OIDC if vars.AWS_ROLE_TO_ASSUME is set,
       # otherwise falls back to static Access Key credentials.
       - name: Configure AWS credentials (OIDC)
-        if: vars.AWS_ROLE_TO_ASSUME != ''
+        if: vars.SNOWFLAKE_AUTHENTICATOR == 'WORKLOAD_IDENTITY'
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Configure AWS credentials (Access Key)
-        if: vars.AWS_ROLE_TO_ASSUME == ''
+        if: vars.SNOWFLAKE_AUTHENTICATOR != 'WORKLOAD_IDENTITY'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -471,7 +488,7 @@ jobs:
     needs: [detect]
     if: github.event_name == 'push' && needs.detect.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
-    environment: development
+    environment: ${{ needs.detect.outputs.gh_environment }}
     strategy:
       fail-fast: false
       max-parallel: 1

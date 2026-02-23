@@ -2,25 +2,32 @@
 #
 # changed-deployments.sh
 #
-# Determines which environments/dev/<deployment>/ directories are affected
+# Determines which <env_dir>/<deployment>/ directories are affected
 # by a set of changed files. Handles both direct changes and transitive
 # module dependencies.
 #
 # Usage:
-#   ./changed-deployments.sh "file1 file2 file3"
-#   echo "file1 file2" | ./changed-deployments.sh
+#   ./changed-deployments.sh "file1 file2 file3" "environments/development"
+#   echo "file1 file2" | ./changed-deployments.sh "" "environments/staging"
+#
+# Arguments:
+#   $1 - Space-separated list of changed files (or "" to read from stdin)
+#   $2 - Environment directory prefix (e.g. environments/development)
 #
 # Output: JSON array of affected deployment directories
-#   e.g., ["environments/dev/terraform_db","environments/dev/e2e_ml_quickstart"]
+#   e.g., ["environments/development/terraform_db","environments/development/e2e_ml_quickstart"]
 
 set -euo pipefail
 
-# Get changed files from argument or stdin
-if [[ $# -gt 0 ]]; then
+# Get changed files from first argument or stdin
+if [[ $# -gt 0 && -n "$1" ]]; then
   CHANGED_FILES="$1"
 else
   CHANGED_FILES=$(cat)
 fi
+
+# Environment directory (required)
+ENV_DIR="${2:?Usage: $0 <changed_files> <env_dir>}"
 
 # Exit early if no changed files
 if [[ -z "${CHANGED_FILES}" ]]; then
@@ -39,7 +46,7 @@ trap 'rm -f "$MODULE_MAP_FILE" "$AFFECTED_FILE"' EXIT
 
 # Build a mapping of module names to deployments that use them
 # by parsing source = "...modules/<name>" in each deployment's main.tf
-for main_tf in "${REPO_ROOT}"/environments/dev/*/main.tf; do
+for main_tf in "${REPO_ROOT}"/${ENV_DIR}/*/main.tf; do
   if [[ ! -f "$main_tf" ]]; then
     continue
   fi
@@ -61,9 +68,9 @@ done
 
 # Process each changed file
 for changed_file in $CHANGED_FILES; do
-  # Case 1: File is in environments/dev/<deployment>/
-  if [[ "$changed_file" == environments/dev/*/* ]]; then
-    # Extract environments/dev/<deployment>
+  # Case 1: File is in <env_dir>/<deployment>/
+  if [[ "$changed_file" == ${ENV_DIR}/*/* ]]; then
+    # Extract <env_dir>/<deployment>
     deployment_dir=$(echo "$changed_file" | awk -F/ '{print $1"/"$2"/"$3}')
     echo "$deployment_dir" >> "$AFFECTED_FILE"
   fi
