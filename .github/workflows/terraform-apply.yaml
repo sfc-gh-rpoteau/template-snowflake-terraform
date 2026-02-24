@@ -1,0 +1,573 @@
+name: terraform-plan-apply
+
+on:
+  pull_request:
+    branches: [dev, staging, main]
+    paths:
+      - "environments/**"
+      - "modules/**"
+  push:
+    branches: [dev, staging, main]
+    paths:
+      - "environments/**"
+      - "modules/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write   # required for OIDC
+  actions: read 
+  issues: write
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ============================================================
+  # DETECT: Identify affected deployment directories
+  # ============================================================
+  detect:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      deployment_dirs: ${{ steps.set-matrix.outputs.deployment_dirs }}
+      has_changes: ${{ steps.set-matrix.outputs.has_changes }}
+      env_dir: ${{ steps.env.outputs.env_dir }}
+      gh_environment: ${{ steps.env.outputs.gh_environment }}
+      plan_environment: ${{ steps.env.outputs.plan_environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve environment from branch
+        id: env
+        run: |
+          BRANCH="${{ github.base_ref || github.ref_name }}"
+          case "$BRANCH" in
+            dev)     ENV_DIR="environments/development"; GH_ENV="development" ;;
+            staging) ENV_DIR="environments/staging";     GH_ENV="staging" ;;
+            main)    ENV_DIR="environments/production";  GH_ENV="production" ;;
+            *)       echo "::error::Unknown branch $BRANCH"; exit 1 ;;
+          esac
+          echo "env_dir=$ENV_DIR" >> "$GITHUB_OUTPUT"
+          echo "gh_environment=$GH_ENV" >> "$GITHUB_OUTPUT"
+          echo "plan_environment=${GH_ENV}-plan" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Get Terraform version
+        id: tf_version
+        run: echo "TF_VERSION=$(cat .terraform-version)" >> $GITHUB_ENV
+
+      - name: Get changed files
+        id: changed
+        uses: tj-actions/changed-files@v47
+
+      - name: Build matrix from changed deployments
+        id: set-matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CHANGED="${{ steps.changed.outputs.all_changed_files }}"
+          echo "Changed files: $CHANGED"
+
+          # Run the deployment detection script
+          # This handles both direct changes and module dependency changes
+          deployment_dirs=$(.github/scripts/changed-deployments.sh "$CHANGED" "${{ steps.env.outputs.env_dir }}")
+
+          echo "Deployment dirs JSON: $deployment_dirs"
+          echo "deployment_dirs=$deployment_dirs" >> "$GITHUB_OUTPUT"
+
+          # Check if we have any deployments to process
+          if [[ "$deployment_dirs" == "[]" ]]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ============================================================
+  # LINT: Format check, TFLint, and Checkov security scan
+  # ============================================================
+  lint:
+    name: Lint (${{ matrix.deployment_dir }})
+    needs: detect
+    if: needs.detect.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        deployment_dir: ${{ fromJson(needs.detect.outputs.deployment_dirs) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get Terraform version
+        run: echo "TF_VERSION=$(cat .terraform-version)" >> $GITHUB_ENV
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Format Check
+        id: fmt
+        working-directory: ${{ matrix.deployment_dir }}
+        run: terraform fmt -check -recursive -diff
+        continue-on-error: true
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      - name: Init TFLint
+        working-directory: ${{ matrix.deployment_dir }}
+        run: tflint --init
+
+      - name: Run TFLint
+        id: tflint
+        working-directory: ${{ matrix.deployment_dir }}
+        run: tflint --format=compact --recursive
+        continue-on-error: true
+
+      - name: Run Checkov
+        id: checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: ${{ matrix.deployment_dir }}
+          framework: terraform
+          output_format: cli,sarif
+          output_file_path: console,checkov-results.sarif
+          soft_fail: true
+          download_external_modules: true
+
+      # - name: Upload Checkov SARIF
+      #   if: always()
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: checkov-sarif-${{ hashFiles(matrix.deployment_dir) }}
+      #     path: checkov-results.sarif
+      #     retention-days: 5
+
+      - name: Lint Summary
+        if: always()
+        run: |
+          echo "## Lint Results for \`${{ matrix.deployment_dir }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [[ "${{ steps.fmt.outcome }}" == "success" ]]; then
+            echo "✅ **Terraform Format**: Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Terraform Format**: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [[ "${{ steps.tflint.outcome }}" == "success" ]]; then
+            echo "✅ **TFLint**: Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **TFLint**: Issues found" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [[ "${{ steps.checkov.outcome }}" == "success" ]]; then
+            echo "✅ **Checkov**: Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Checkov**: Issues found" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Check Lint Status
+        if: steps.fmt.outcome == 'failure'
+        run: |
+          echo "::error::Terraform format check failed. Run 'terraform fmt -recursive' to fix."
+          exit 1
+  # ============================================================
+  # PLAN: Terraform init, validate, and plan
+  # ============================================================
+  plan:
+    name: Plan (${{ matrix.deployment_dir }})
+    needs: [detect, lint]
+    if: needs.detect.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.detect.outputs.plan_environment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        deployment_dir: ${{ fromJson(needs.detect.outputs.deployment_dirs) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get Terraform version
+        run: echo "TF_VERSION=$(cat .terraform-version)" >> $GITHUB_ENV
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      # AWS credentials: uses OIDC if vars.AWS_ROLE_TO_ASSUME is set,
+      # otherwise falls back to static Access Key credentials.
+      - name: Configure AWS credentials (OIDC)
+        if: vars.SNOWFLAKE_AUTHENTICATOR == 'WORKLOAD_IDENTITY'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Configure AWS credentials (Access Key)
+        if: vars.SNOWFLAKE_AUTHENTICATOR != 'WORKLOAD_IDENTITY'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Extract deployment name
+        id: deployment
+        run: |
+          DEPLOYMENT_NAME=$(basename "${{ matrix.deployment_dir }}")
+          echo "name=$DEPLOYMENT_NAME" >> "$GITHUB_OUTPUT"
+          # Create safe artifact name by replacing slashes
+          SAFE_NAME=$(echo "${{ matrix.deployment_dir }}" | tr '/' '-')
+          echo "safe_name=$SAFE_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Snowflake OIDC Auth
+        if: vars.SNOWFLAKE_AUTHENTICATOR == 'WORKLOAD_IDENTITY'
+        run: |
+          TOKEN=$(curl -sLS \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=snowflakecomputing.com" \
+            | jq -r '.value')
+          echo "::add-mask::$TOKEN"
+          echo "SNOWFLAKE_AUTHENTICATOR=WORKLOAD_IDENTITY" >> "$GITHUB_ENV"
+          echo "SNOWFLAKE_WORKLOAD_IDENTITY_PROVIDER=OIDC" >> "$GITHUB_ENV"
+          {
+            echo "SNOWFLAKE_TOKEN<<SNOWFLAKE_TOKEN_EOF"
+            echo "$TOKEN"
+            echo "SNOWFLAKE_TOKEN_EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Setup Snowflake Key Pair Auth
+        if: vars.SNOWFLAKE_AUTHENTICATOR != 'WORKLOAD_IDENTITY'
+        env:
+          SF_PRIVATE_KEY: ${{ secrets.TF_ADMIN_PRIVATE_KEY }}
+        run: |
+          echo "SNOWFLAKE_AUTHENTICATOR=${{ vars.SNOWFLAKE_AUTHENTICATOR }}" >> "$GITHUB_ENV"
+          {
+            echo "SNOWFLAKE_PRIVATE_KEY<<SNOWFLAKE_PRIVATE_KEY_EOF"
+            echo "$SF_PRIVATE_KEY"
+            echo "SNOWFLAKE_PRIVATE_KEY_EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Terraform Init
+        id: init
+        working-directory: ${{ matrix.deployment_dir }}
+        run: |
+          terraform init -upgrade \
+            -backend-config=backend.hcl \
+            -input=false
+
+      - name: Terraform Validate
+        id: validate
+        working-directory: ${{ matrix.deployment_dir }}
+        run: terraform validate -no-color
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ matrix.deployment_dir }}
+        run: |
+          terraform plan \
+            -no-color \
+            -input=false \
+            -lock-timeout=5m \
+            -out=tfplan \
+            2>&1 | tee plan-output.txt
+
+          # Generate human-readable plan
+          terraform show -no-color tfplan > plan.txt
+        env:
+          TF_VAR_organization_name: ${{ secrets.SNOWFLAKE_ORGANIZATION_NAME }}
+          TF_VAR_account_name: ${{ secrets.SNOWFLAKE_ACCOUNT_NAME }}
+          TF_VAR_tf_user: ${{ secrets.SNOWFLAKE_USER }}
+          TF_VAR_tf_admin_role: ${{ secrets.SNOWFLAKE_ADMIN_ROLE }}
+          TF_VAR_tf_securityadmin_role: ${{ secrets.SNOWFLAKE_SECURITYADMIN_ROLE }}
+        continue-on-error: true
+
+      - name: Upload Plan Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ steps.deployment.outputs.safe_name }}
+          path: |
+            ${{ matrix.deployment_dir }}/tfplan
+            ${{ matrix.deployment_dir }}/plan.txt
+            ${{ matrix.deployment_dir }}/plan-output.txt
+          retention-days: 0
+
+      - name: Plan Summary
+        if: always()
+        run: |
+          echo "## Terraform Plan for \`${{ matrix.deployment_dir }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [[ "${{ steps.init.outcome }}" != "success" ]]; then
+            echo "❌ **Init**: Failed" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ steps.validate.outcome }}" != "success" ]]; then
+            echo "❌ **Validate**: Failed" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ steps.plan.outcome }}" != "success" ]]; then
+            echo "❌ **Plan**: Failed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ **Plan**: Success" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "<details><summary>Show Plan Output</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```terraform' >> $GITHUB_STEP_SUMMARY
+          if [[ -f "${{ matrix.deployment_dir }}/plan.txt" ]]; then
+            head -c 65000 "${{ matrix.deployment_dir }}/plan.txt" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Plan output not available" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+
+      - name: Check Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: |
+          echo "::error::Terraform plan failed for ${{ matrix.deployment_dir }}"
+          exit 1
+# ============================================================
+  # COMMENT: Post plan summary to PR
+  # ============================================================
+  comment:
+    name: PR Comment
+    needs: [detect, plan]
+    if: always() && needs.detect.outputs.has_changes == 'true' && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all plan artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tfplan-*
+          path: plans
+          merge-multiple: false
+
+      - name: Generate PR Comment
+        id: comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const deploymentDirs = ${{ needs.detect.outputs.deployment_dirs }};
+            let comment = '## 🏗️ Terraform Plan Summary\n\n';
+
+            // Get plan status from job
+            const planResult = '${{ needs.plan.result }}';
+            if (planResult === 'success') {
+              comment += '✅ All plans completed successfully\n\n';
+            } else if (planResult === 'failure') {
+              comment += '❌ Some plans failed\n\n';
+            } else {
+              comment += '⚠️ Plans completed with warnings\n\n';
+            }
+
+            comment += '| Stack | Status |\n';
+            comment += '|-------|--------|\n';
+
+            for (const dir of deploymentDirs) {
+              const safeName = dir.replace(/\//g, '-');
+              const planPath = `plans/tfplan-${safeName}/plan.txt`;
+
+              let status = '✅';
+              if (!fs.existsSync(planPath)) {
+                status = '❌';
+              }
+
+              comment += `| \`${dir}\` | ${status} |\n`;
+            }
+
+            comment += '\n<details><summary>📋 Plan Details</summary>\n\n';
+
+            for (const dir of deploymentDirs) {
+              const safeName = dir.replace(/\//g, '-');
+              const planPath = `plans/tfplan-${safeName}/plan.txt`;
+
+              comment += `### \`${dir}\`\n\n`;
+
+              if (fs.existsSync(planPath)) {
+                let planContent = fs.readFileSync(planPath, 'utf8');
+                // Truncate if too long
+                if (planContent.length > 10000) {
+                  planContent = planContent.substring(0, 10000) + '\n... (truncated)';
+                }
+                comment += '```terraform\n' + planContent + '\n```\n\n';
+              } else {
+                comment += '```\nPlan output not available\n```\n\n';
+              }
+            }
+
+            comment += '</details>\n\n';
+            comment += `> 📦 Full plan artifacts are available in the [Actions run](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})`;
+
+            // Truncate entire comment if needed (GitHub has 65536 char limit)
+            if (comment.length > 65000) {
+              comment = comment.substring(0, 64900) + '\n\n... (comment truncated)';
+            }
+
+            // Find existing comment to update
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' &&
+              c.body.includes('🏗️ Terraform Plan Summary')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                ...context.repo,
+                comment_id: botComment.id,
+                body: comment
+              });
+            } else {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: context.issue.number,
+                body: comment
+              });
+            }
+
+  # ============================================================
+  # APPLY: Apply the plan (gated by environment approval)
+  # ============================================================
+  apply:
+    name: Apply (${{ matrix.deployment_dir }})
+    needs: [detect, plan]
+    if: github.event_name == 'push' && needs.detect.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.detect.outputs.gh_environment }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        deployment_dir: ${{ fromJson(needs.detect.outputs.deployment_dirs) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get Terraform version
+        run: echo "TF_VERSION=$(cat .terraform-version)" >> $GITHUB_ENV
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Extract deployment name
+        id: deployment
+        run: |
+          SAFE_NAME=$(echo "${{ matrix.deployment_dir }}" | tr '/' '-')
+          echo "safe_name=$SAFE_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Setup Snowflake OIDC Auth
+        if: vars.SNOWFLAKE_AUTHENTICATOR == 'WORKLOAD_IDENTITY'
+        run: |
+          TOKEN=$(curl -sLS \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=snowflakecomputing.com" \
+            | jq -r '.value')
+          echo "::add-mask::$TOKEN"
+          echo "SNOWFLAKE_AUTHENTICATOR=WORKLOAD_IDENTITY" >> "$GITHUB_ENV"
+          echo "SNOWFLAKE_WORKLOAD_IDENTITY_PROVIDER=OIDC" >> "$GITHUB_ENV"
+          {
+            echo "SNOWFLAKE_TOKEN<<SNOWFLAKE_TOKEN_EOF"
+            echo "$TOKEN"
+            echo "SNOWFLAKE_TOKEN_EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Setup Snowflake Key Pair Auth
+        if: vars.SNOWFLAKE_AUTHENTICATOR != 'WORKLOAD_IDENTITY'
+        env:
+          SF_PRIVATE_KEY: ${{ secrets.TF_ADMIN_PRIVATE_KEY }}
+        run: |
+          echo "SNOWFLAKE_AUTHENTICATOR=${{ vars.SNOWFLAKE_AUTHENTICATOR }}" >> "$GITHUB_ENV"
+          {
+            echo "SNOWFLAKE_PRIVATE_KEY<<SNOWFLAKE_PRIVATE_KEY_EOF"
+            echo "$SF_PRIVATE_KEY"
+            echo "SNOWFLAKE_PRIVATE_KEY_EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Terraform Init
+        id: init
+        working-directory: ${{ matrix.deployment_dir }}
+        run: |
+          terraform init -upgrade \
+            -backend-config=backend.hcl \
+            -input=false
+
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ steps.deployment.outputs.safe_name }}
+          path: ${{ matrix.deployment_dir }}
+
+      - name: Terraform Apply
+        id: apply
+        working-directory: ${{ matrix.deployment_dir }}
+        run: |
+          terraform apply \
+            -input=false \
+            -no-color \
+            -lock-timeout=5m \
+            tfplan \
+            2>&1 | tee apply-output.txt
+        env:
+          TF_VAR_organization_name: ${{ secrets.SNOWFLAKE_ORGANIZATION_NAME }}
+          TF_VAR_account_name: ${{ secrets.SNOWFLAKE_ACCOUNT_NAME }}
+          TF_VAR_tf_user: ${{ secrets.SNOWFLAKE_USER }}
+          TF_VAR_tf_admin_role: ${{ secrets.SNOWFLAKE_ADMIN_ROLE }}
+          TF_VAR_tf_securityadmin_role: ${{ secrets.SNOWFLAKE_SECURITYADMIN_ROLE }}
+
+      - name: Apply Summary
+        if: always()
+        run: |
+          echo "## Terraform Apply for \`${{ matrix.deployment_dir }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ steps.apply.outcome }}" == "success" ]]; then
+            echo "✅ **Apply**: Success" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Apply**: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "<details><summary>Show Apply Output</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          if [[ -f "apply-output.txt" ]]; then
+            head -c 65000 apply-output.txt >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Apply output not available" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+
+      - name: Check Apply Status
+        if: steps.apply.outcome == 'failure'
+        run: |
+          echo "::error::Terraform apply failed for ${{ matrix.deployment_dir }}"
+          exit 1
