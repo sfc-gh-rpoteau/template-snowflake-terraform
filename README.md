@@ -226,13 +226,20 @@ checkov -d . --quiet
 
 Next, we will set up Secure authentication between GitHub actions and AWS where we will have an S3 bucket for state tracking and locking. You haven't already first set up the S3 bucket with lockfile functionality, refer to [Remote State and Locking](#remote-state-and-locking) section for more details. Now, setup the OIDC connection between GitHub and AWS using the Github documentation [here](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws).
 
-We will create a two part workflow, with the following jobs:
-1. A pull request job to plan the changes and review the plan.
-2. A deployment job to apply the changes and promote the changes to the next environment.
+We use a single workflow (`terraform-plan-apply`) that handles all three stages through dynamic branch resolution:
 
-Check the `.github/workflow/terraform-apply-dev.yaml` file for a reference implementation.
+| Branch | Environment | Directory |
+|--------|-------------|-----------|
+| `dev` | `development` | `environments/development/` |
+| `staging` | `staging` | `environments/staging/` |
+| `main` | `production` | `environments/production/` |
 
-The first job triggers when a pull request is created or updated. It will make sure the code is clean, secure, follows policies and will run the plan command to generate a plan and serve it up for review.
+- **On pull request** -- detect, lint, plan (speculative), and post a PR comment with the plan summary.
+- **On merge (push)** -- detect, lint, plan, then wait for **reviewer approval** via GitHub Environment protection rules before applying.
+
+Each stage uses two GitHub Environments: `{env}-plan` (secrets, no approval) for planning, and `{env}` (secrets + required reviewers) for applying.
+
+For full details on the workflow architecture, authentication, environment setup, and change detection, see the [GitHub Actions CI/CD documentation](.github/README.md).
 
 
 ### Rollback Strategy
