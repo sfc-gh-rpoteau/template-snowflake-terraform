@@ -1,5 +1,16 @@
 # Terraform gitignore from https://github.com/github/gitignore/blob/main/Terraform.gitignore
 
+# act cli artifacts
+artifacts/
+events/
+scripts/generate-act-events.sh
+Dockerfile.act
+.actrc
+
+# Environment variables
+.env
+.env.*
+
 # Local .terraform directories
 .terraform/
 
@@ -44,3 +55,6 @@ terraform.rc
 # Optional: ignore plan files saved before destroying Terraform configuration
 # Uncomment the line below if you want to ignore planout files.
 # planout
+
+.DS_Store
+TODO.md
